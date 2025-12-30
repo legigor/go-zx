@@ -12,27 +12,14 @@ go-zx is a ZX Spectrum 48K emulator/disassembler learning project. The goal is t
 # Build and run
 go run .
 
-# Run code generation (generates opcode tables from JSON)
-go generate ./...
-
 # Build binary
 go build -o go-zx .
 ```
 
 ## Architecture
 
-The project uses a code generator pattern for Z80 opcode tables:
-
 - `main.go` - Entry point with ROM loader and disassembler
-- `cmd/generators/opcodes/` - Code generator that converts `opcode-table.json` to Go code
-- `pkg/opcodes/` - Generated opcode definitions (output of code generator)
 - `assets/roms/48.rom` - ZX Spectrum 48K ROM binary (16KB)
-- `assets/opcode-table.json` - Z80 opcode definitions in JSON format
-
-The `go:generate` directive in `main.go` drives code generation:
-```
-//go:generate go run ./cmd/generators/opcodes/main.go --input ./assets/opcode-table.json --output ./pkg/opcodes/opcodes_generated.go
-```
 
 ## Z80 Resources
 

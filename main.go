@@ -1,4 +1,3 @@
-//go:generate go run ./cmd/generators/opcodes/main.go --input ./assets/opcode-table.json --output ./pkg/opcodes/opcodes_generated.go
 package main
 
 import (
