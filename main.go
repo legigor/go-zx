@@ -4,27 +4,26 @@ import (
 	"fmt"
 	"log"
 	"os"
+
+	"go-zx/disasm"
 )
 
-func loadRom() ([]byte, error) {
-	data, err := os.ReadFile("assets/roms/48.rom")
-	// increase up to 48KB
-	return data, err
-}
-
-func disassemble(rom []byte) {
-	pc := 0
-	for pc < len(rom) {
-		opcode := rom[pc]
-		fmt.Printf("%04X: DB 0x%02X ; Unknown\n", pc, opcode)
-		pc += 1 // inst.Length
-	}
+func loadROM() ([]byte, error) {
+	return os.ReadFile("assets/roms/48.rom")
 }
 
 func main() {
-	rom, err := loadRom()
+	d, err := disasm.NewFromFile("assets/opcode-table.json")
 	if err != nil {
 		log.Fatal(err)
 	}
-	disassemble(rom)
+
+	rom, err := loadROM()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for _, line := range d.Disassemble(rom) {
+		fmt.Println(disasm.FormatLine(line))
+	}
 }
