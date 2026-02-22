@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	if err := tui.RunPrototype(); err != nil {
+	if err := tui.RunLive("assets/roms/48.rom", "assets/opcode-table.json"); err != nil {
 		log.Fatal(err)
 	}
 }

@@ -16,7 +16,7 @@ func TestViewContainsCorePanels(t *testing.T) {
 		"CPU / Registers",
 		"Instruction",
 		"Flags / Clock",
-		"Disassembly (window)",
+		"Disassembly (from PC)",
 		"[s] step",
 	}
 
@@ -31,7 +31,23 @@ func TestCompactViewWhenNarrow(t *testing.T) {
 	m := initialModel()
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 70, Height: 24})
 	view := updated.(model).View()
-	if !strings.Contains(view, "go-zx TUI prototype") {
+	if !strings.Contains(view, "go-zx live") {
 		t.Fatalf("expected compact header, got:\n%s", view)
+	}
+}
+
+func TestStepKeyExecutesRealInstruction(t *testing.T) {
+	m := initialModel()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	next := updated.(model)
+
+	if next.lastErr != "" {
+		t.Fatalf("unexpected error: %v", next.lastErr)
+	}
+	if next.emu.StepCount != 1 {
+		t.Fatalf("step count mismatch: got=%d want=1", next.emu.StepCount)
+	}
+	if next.lastStep.Mnemonic != "DI" {
+		t.Fatalf("mnemonic mismatch: got=%q want=DI", next.lastStep.Mnemonic)
 	}
 }
