@@ -87,8 +87,7 @@ func (e *Emulator) Step() (StepResult, error) {
 
 	op := fetch8()
 	e.Reg.R++
-
-	result := StepResult{PCBefore: pcBefore, Bytes: bytes}
+	result := StepResult{PCBefore: pcBefore}
 
 	// LD r,r' block (0x40-0x7F), except HALT (0x76)
 	if op >= 0x40 && op <= 0x7F && op != 0x76 {
@@ -102,15 +101,336 @@ func (e *Emulator) Step() (StepResult, error) {
 		} else {
 			result.TStates = 4
 		}
-		result.Bytes = append([]byte(nil), bytes...)
-		result.PCAfter = e.Reg.PC
-		e.commitStep(result)
-		return result, nil
+		return e.finishStep(result, bytes)
+	}
+
+	// ALU A,r block (0x80-0xBF)
+	if op >= 0x80 && op <= 0xBF {
+		src := op & 0x07
+		v := e.readRegByIndex(src)
+		group := (op >> 3) & 0x07
+		suffix := regName(src)
+		switch group {
+		case 0:
+			e.addA(v, false)
+			result.Mnemonic = fmt.Sprintf("ADD A,%s", suffix)
+		case 1:
+			e.addA(v, true)
+			result.Mnemonic = fmt.Sprintf("ADC A,%s", suffix)
+		case 2:
+			e.subA(v, false)
+			result.Mnemonic = fmt.Sprintf("SUB %s", suffix)
+		case 3:
+			e.subA(v, true)
+			result.Mnemonic = fmt.Sprintf("SBC A,%s", suffix)
+		case 4:
+			e.andA(v)
+			result.Mnemonic = fmt.Sprintf("AND %s", suffix)
+		case 5:
+			e.xorA(v)
+			result.Mnemonic = fmt.Sprintf("XOR %s", suffix)
+		case 6:
+			e.orA(v)
+			result.Mnemonic = fmt.Sprintf("OR %s", suffix)
+		case 7:
+			e.cpA(v)
+			result.Mnemonic = fmt.Sprintf("CP %s", suffix)
+		}
+		if src == 6 {
+			result.TStates = 7
+		} else {
+			result.TStates = 4
+		}
+		return e.finishStep(result, bytes)
+	}
+
+	// INC r / DEC r blocks
+	if op&0xC7 == 0x04 {
+		idx := (op >> 3) & 0x07
+		v := e.readRegByIndex(idx)
+		v2 := e.inc8(v)
+		e.writeRegByIndex(idx, v2)
+		result.Mnemonic = fmt.Sprintf("INC %s", regName(idx))
+		if idx == 6 {
+			result.TStates = 11
+		} else {
+			result.TStates = 4
+		}
+		return e.finishStep(result, bytes)
+	}
+	if op&0xC7 == 0x05 {
+		idx := (op >> 3) & 0x07
+		v := e.readRegByIndex(idx)
+		v2 := e.dec8(v)
+		e.writeRegByIndex(idx, v2)
+		result.Mnemonic = fmt.Sprintf("DEC %s", regName(idx))
+		if idx == 6 {
+			result.TStates = 11
+		} else {
+			result.TStates = 4
+		}
+		return e.finishStep(result, bytes)
 	}
 
 	switch op {
 	case 0x00:
 		result.Mnemonic = "NOP"
+		result.TStates = 4
+	case 0x01, 0x11, 0x21, 0x31:
+		nn := fetch16()
+		pair := (op >> 4) & 0x03
+		e.writePairByIndex(pair, nn)
+		result.Mnemonic = fmt.Sprintf("LD %s,$%04X", pairName(pair), nn)
+		result.TStates = 10
+	case 0x02:
+		e.Bus.Write(e.Reg.BC(), e.Reg.A)
+		result.Mnemonic = "LD (BC),A"
+		result.TStates = 7
+	case 0x0A:
+		e.Reg.A = e.Bus.Read(e.Reg.BC())
+		result.Mnemonic = "LD A,(BC)"
+		result.TStates = 7
+	case 0x12:
+		e.Bus.Write(e.Reg.DE(), e.Reg.A)
+		result.Mnemonic = "LD (DE),A"
+		result.TStates = 7
+	case 0x1A:
+		e.Reg.A = e.Bus.Read(e.Reg.DE())
+		result.Mnemonic = "LD A,(DE)"
+		result.TStates = 7
+	case 0x03, 0x13, 0x23, 0x33:
+		pair := (op >> 4) & 0x03
+		v := e.readPairByIndex(pair) + 1
+		e.writePairByIndex(pair, v)
+		result.Mnemonic = fmt.Sprintf("INC %s", pairName(pair))
+		result.TStates = 6
+	case 0x0B, 0x1B, 0x2B, 0x3B:
+		pair := (op >> 4) & 0x03
+		v := e.readPairByIndex(pair) - 1
+		e.writePairByIndex(pair, v)
+		result.Mnemonic = fmt.Sprintf("DEC %s", pairName(pair))
+		result.TStates = 6
+	case 0x06, 0x0E, 0x16, 0x1E, 0x26, 0x2E, 0x36, 0x3E:
+		n := fetch8()
+		idx := (op >> 3) & 0x07
+		e.writeRegByIndex(idx, n)
+		result.Mnemonic = fmt.Sprintf("LD %s,$%02X", regName(idx), n)
+		if idx == 6 {
+			result.TStates = 10
+		} else {
+			result.TStates = 7
+		}
+	case 0x07:
+		e.rlca()
+		result.Mnemonic = "RLCA"
+		result.TStates = 4
+	case 0x08:
+		e.exAF()
+		result.Mnemonic = "EX AF,AF'"
+		result.TStates = 4
+	case 0x09, 0x19, 0x29, 0x39:
+		pair := (op >> 4) & 0x03
+		v := e.readPairByIndex(pair)
+		e.addHL(v)
+		result.Mnemonic = fmt.Sprintf("ADD HL,%s", pairName(pair))
+		result.TStates = 11
+	case 0x0F:
+		e.rrca()
+		result.Mnemonic = "RRCA"
+		result.TStates = 4
+	case 0x10:
+		d := int8(fetch8())
+		target := uint16(int(e.Reg.PC) + int(d))
+		e.Reg.B--
+		if e.Reg.B != 0 {
+			e.Reg.PC = target
+			result.TStates = 13
+		} else {
+			result.TStates = 8
+		}
+		result.Mnemonic = fmt.Sprintf("DJNZ $%04X", target)
+	case 0x17:
+		e.rla()
+		result.Mnemonic = "RLA"
+		result.TStates = 4
+	case 0x18:
+		d := int8(fetch8())
+		target := uint16(int(e.Reg.PC) + int(d))
+		e.Reg.PC = target
+		result.Mnemonic = fmt.Sprintf("JR $%04X", target)
+		result.TStates = 12
+	case 0x1F:
+		e.rra()
+		result.Mnemonic = "RRA"
+		result.TStates = 4
+	case 0x20, 0x28, 0x30, 0x38:
+		d := int8(fetch8())
+		target := uint16(int(e.Reg.PC) + int(d))
+		cond, cc := e.jrCondition(op)
+		if cond {
+			e.Reg.PC = target
+			result.TStates = 12
+		} else {
+			result.TStates = 7
+		}
+		result.Mnemonic = fmt.Sprintf("JR %s,$%04X", cc, target)
+	case 0x22:
+		nn := fetch16()
+		hl := e.Reg.HL()
+		e.Bus.Write(nn, byte(hl))
+		e.Bus.Write(nn+1, byte(hl>>8))
+		result.Mnemonic = fmt.Sprintf("LD ($%04X),HL", nn)
+		result.TStates = 16
+	case 0x2A:
+		nn := fetch16()
+		lo := uint16(e.Bus.Read(nn))
+		hi := uint16(e.Bus.Read(nn + 1))
+		e.Reg.SetHL(lo | (hi << 8))
+		result.Mnemonic = fmt.Sprintf("LD HL,($%04X)", nn)
+		result.TStates = 16
+	case 0x2F:
+		e.cpl()
+		result.Mnemonic = "CPL"
+		result.TStates = 4
+	case 0x32:
+		nn := fetch16()
+		e.Bus.Write(nn, e.Reg.A)
+		result.Mnemonic = fmt.Sprintf("LD ($%04X),A", nn)
+		result.TStates = 13
+	case 0x37:
+		e.scf()
+		result.Mnemonic = "SCF"
+		result.TStates = 4
+	case 0x3A:
+		nn := fetch16()
+		e.Reg.A = e.Bus.Read(nn)
+		result.Mnemonic = fmt.Sprintf("LD A,($%04X)", nn)
+		result.TStates = 13
+	case 0x3F:
+		e.ccf()
+		result.Mnemonic = "CCF"
+		result.TStates = 4
+	case 0x76:
+		e.Halted = true
+		result.Mnemonic = "HALT"
+		result.TStates = 4
+	case 0xC3:
+		nn := fetch16()
+		e.Reg.PC = nn
+		result.Mnemonic = fmt.Sprintf("JP $%04X", nn)
+		result.TStates = 10
+	case 0xC2, 0xCA, 0xD2, 0xDA, 0xE2, 0xEA, 0xF2, 0xFA:
+		nn := fetch16()
+		condIndex := (op >> 3) & 0x07
+		cond, cc := e.condByIndex(condIndex)
+		if cond {
+			e.Reg.PC = nn
+		}
+		result.Mnemonic = fmt.Sprintf("JP %s,$%04X", cc, nn)
+		result.TStates = 10
+	case 0xC9:
+		ret := e.pop16()
+		e.Reg.PC = ret
+		result.Mnemonic = "RET"
+		result.TStates = 10
+	case 0xC0, 0xC8, 0xD0, 0xD8, 0xE0, 0xE8, 0xF0, 0xF8:
+		condIndex := (op >> 3) & 0x07
+		cond, cc := e.condByIndex(condIndex)
+		if cond {
+			ret := e.pop16()
+			e.Reg.PC = ret
+			result.TStates = 11
+		} else {
+			result.TStates = 5
+		}
+		result.Mnemonic = fmt.Sprintf("RET %s", cc)
+	case 0xCD:
+		nn := fetch16()
+		e.push16(e.Reg.PC)
+		e.Reg.PC = nn
+		result.Mnemonic = fmt.Sprintf("CALL $%04X", nn)
+		result.TStates = 17
+	case 0xC4, 0xCC, 0xD4, 0xDC, 0xE4, 0xEC, 0xF4, 0xFC:
+		nn := fetch16()
+		condIndex := (op >> 3) & 0x07
+		cond, cc := e.condByIndex(condIndex)
+		if cond {
+			e.push16(e.Reg.PC)
+			e.Reg.PC = nn
+			result.TStates = 17
+		} else {
+			result.TStates = 10
+		}
+		result.Mnemonic = fmt.Sprintf("CALL %s,$%04X", cc, nn)
+	case 0xC1, 0xD1, 0xE1, 0xF1:
+		pair := (op >> 4) & 0x03
+		value := e.pop16()
+		e.writePair2ByIndex(pair, value)
+		result.Mnemonic = fmt.Sprintf("POP %s", pair2Name(pair))
+		result.TStates = 10
+	case 0xC5, 0xD5, 0xE5, 0xF5:
+		pair := (op >> 4) & 0x03
+		value := e.readPair2ByIndex(pair)
+		e.push16(value)
+		result.Mnemonic = fmt.Sprintf("PUSH %s", pair2Name(pair))
+		result.TStates = 11
+	case 0xC6, 0xCE, 0xD6, 0xDE, 0xE6, 0xEE, 0xF6, 0xFE:
+		n := fetch8()
+		group := (op >> 3) & 0x07
+		switch group {
+		case 0:
+			e.addA(n, false)
+			result.Mnemonic = fmt.Sprintf("ADD A,$%02X", n)
+		case 1:
+			e.addA(n, true)
+			result.Mnemonic = fmt.Sprintf("ADC A,$%02X", n)
+		case 2:
+			e.subA(n, false)
+			result.Mnemonic = fmt.Sprintf("SUB $%02X", n)
+		case 3:
+			e.subA(n, true)
+			result.Mnemonic = fmt.Sprintf("SBC A,$%02X", n)
+		case 4:
+			e.andA(n)
+			result.Mnemonic = fmt.Sprintf("AND $%02X", n)
+		case 5:
+			e.xorA(n)
+			result.Mnemonic = fmt.Sprintf("XOR $%02X", n)
+		case 6:
+			e.orA(n)
+			result.Mnemonic = fmt.Sprintf("OR $%02X", n)
+		case 7:
+			e.cpA(n)
+			result.Mnemonic = fmt.Sprintf("CP $%02X", n)
+		}
+		result.TStates = 7
+	case 0xD3:
+		n := fetch8()
+		port := uint16(n) | (uint16(e.Reg.A) << 8)
+		e.Bus.Out(port, e.Reg.A)
+		result.Mnemonic = fmt.Sprintf("OUT ($%02X),A", n)
+		result.TStates = 11
+	case 0xD9:
+		e.exx()
+		result.Mnemonic = "EXX"
+		result.TStates = 4
+	case 0xDB:
+		n := fetch8()
+		port := uint16(n) | (uint16(e.Reg.A) << 8)
+		e.Reg.A = e.Bus.In(port)
+		result.Mnemonic = fmt.Sprintf("IN A,($%02X)", n)
+		result.TStates = 11
+	case 0xE3:
+		e.exSPHL()
+		result.Mnemonic = "EX (SP),HL"
+		result.TStates = 19
+	case 0xE9:
+		e.Reg.PC = e.Reg.HL()
+		result.Mnemonic = "JP (HL)"
+		result.TStates = 4
+	case 0xEB:
+		e.exDEHL()
+		result.Mnemonic = "EX DE,HL"
 		result.TStates = 4
 	case 0xF3:
 		e.IFF1 = false
@@ -122,124 +442,121 @@ func (e *Emulator) Step() (StepResult, error) {
 		e.IFF2 = true
 		result.Mnemonic = "EI"
 		result.TStates = 4
-	case 0x76:
-		e.Halted = true
-		result.Mnemonic = "HALT"
-		result.TStates = 4
-	case 0xAF:
-		e.xorA(e.Reg.A)
-		result.Mnemonic = "XOR A"
-		result.TStates = 4
-	case 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE:
-		regIndex := op & 0x07
-		v := e.readRegByIndex(regIndex)
-		e.xorA(v)
-		result.Mnemonic = fmt.Sprintf("XOR %s", regName(regIndex))
-		if regIndex == 6 {
-			result.TStates = 7
-		} else {
-			result.TStates = 4
+	case 0xED:
+		ed := fetch8()
+		if err := e.execED(ed, &result, fetch8, fetch16); err != nil {
+			e.Reg.PC = pcBefore
+			result.Bytes = append([]byte(nil), bytes...)
+			result.PCAfter = e.Reg.PC
+			return result, err
 		}
-	case 0x3E:
-		n := fetch8()
-		e.Reg.A = n
-		result.Mnemonic = fmt.Sprintf("LD A,$%02X", n)
-		result.TStates = 7
-	case 0x06, 0x0E, 0x16, 0x1E, 0x26, 0x2E:
-		n := fetch8()
-		regIndex := (op >> 3) & 0x07
-		e.writeRegByIndex(regIndex, n)
-		result.Mnemonic = fmt.Sprintf("LD %s,$%02X", regName(regIndex), n)
-		result.TStates = 7
-	case 0x36:
-		n := fetch8()
-		e.Bus.Write(e.Reg.HL(), n)
-		result.Mnemonic = fmt.Sprintf("LD (HL),$%02X", n)
-		result.TStates = 10
-	case 0x01:
-		nn := fetch16()
-		e.Reg.SetBC(nn)
-		result.Mnemonic = fmt.Sprintf("LD BC,$%04X", nn)
-		result.TStates = 10
-	case 0x11:
-		nn := fetch16()
-		e.Reg.SetDE(nn)
-		result.Mnemonic = fmt.Sprintf("LD DE,$%04X", nn)
-		result.TStates = 10
-	case 0x21:
-		nn := fetch16()
-		e.Reg.SetHL(nn)
-		result.Mnemonic = fmt.Sprintf("LD HL,$%04X", nn)
-		result.TStates = 10
-	case 0x31:
-		nn := fetch16()
-		e.Reg.SP = nn
-		result.Mnemonic = fmt.Sprintf("LD SP,$%04X", nn)
-		result.TStates = 10
-	case 0x32:
-		nn := fetch16()
-		e.Bus.Write(nn, e.Reg.A)
-		result.Mnemonic = fmt.Sprintf("LD ($%04X),A", nn)
-		result.TStates = 13
-	case 0x3A:
-		nn := fetch16()
-		e.Reg.A = e.Bus.Read(nn)
-		result.Mnemonic = fmt.Sprintf("LD A,($%04X)", nn)
-		result.TStates = 13
-	case 0x77:
-		e.Bus.Write(e.Reg.HL(), e.Reg.A)
-		result.Mnemonic = "LD (HL),A"
-		result.TStates = 7
-	case 0x7E:
-		e.Reg.A = e.Bus.Read(e.Reg.HL())
-		result.Mnemonic = "LD A,(HL)"
-		result.TStates = 7
-	case 0x23:
-		e.Reg.SetHL(e.Reg.HL() + 1)
-		result.Mnemonic = "INC HL"
-		result.TStates = 6
-	case 0x18:
-		d := int8(fetch8())
-		target := uint16(int(e.Reg.PC) + int(d))
-		e.Reg.PC = target
-		result.Mnemonic = fmt.Sprintf("JR $%04X", target)
-		result.TStates = 12
-	case 0x20, 0x28, 0x30, 0x38:
-		d := int8(fetch8())
-		target := uint16(int(e.Reg.PC) + int(d))
-		cond, cc := e.jrCondition(op)
-		if cond {
-			e.Reg.PC = target
-			result.Mnemonic = fmt.Sprintf("JR %s,$%04X", cc, target)
-			result.TStates = 12
-		} else {
-			result.Mnemonic = fmt.Sprintf("JR %s,$%04X", cc, target)
-			result.TStates = 7
-		}
-	case 0xC3:
-		nn := fetch16()
-		e.Reg.PC = nn
-		result.Mnemonic = fmt.Sprintf("JP $%04X", nn)
-		result.TStates = 10
-	case 0xCD:
-		nn := fetch16()
-		e.push16(e.Reg.PC)
-		e.Reg.PC = nn
-		result.Mnemonic = fmt.Sprintf("CALL $%04X", nn)
-		result.TStates = 17
-	case 0xC9:
-		ret := e.pop16()
-		e.Reg.PC = ret
-		result.Mnemonic = "RET"
-		result.TStates = 10
+	case 0xDD, 0xFD, 0xCB:
+		e.Reg.PC = pcBefore
+		result.Bytes = append([]byte(nil), bytes...)
+		result.PCAfter = e.Reg.PC
+		return result, fmt.Errorf("unsupported prefix $%02X at $%04X", op, pcBefore)
 	default:
-		// Keep PC stable on trap to unsupported opcode so debugger/UI can inspect the faulting address.
 		e.Reg.PC = pcBefore
 		result.Bytes = append([]byte(nil), bytes...)
 		result.PCAfter = e.Reg.PC
 		return result, fmt.Errorf("unsupported opcode $%02X at $%04X", op, pcBefore)
 	}
 
+	return e.finishStep(result, bytes)
+}
+
+func (e *Emulator) execED(ed byte, result *StepResult, _ func() byte, fetch16 func() uint16) error {
+	switch ed {
+	case 0x42, 0x52, 0x62, 0x72:
+		pair := (ed >> 4) & 0x03
+		ss := e.readPairByIndex(pair)
+		e.sbcHL(ss)
+		result.Mnemonic = fmt.Sprintf("SBC HL,%s", pairName(pair))
+		result.TStates = 15
+	case 0x4A, 0x5A, 0x6A, 0x7A:
+		pair := (ed >> 4) & 0x03
+		ss := e.readPairByIndex(pair)
+		e.adcHL(ss)
+		result.Mnemonic = fmt.Sprintf("ADC HL,%s", pairName(pair))
+		result.TStates = 15
+	case 0x43, 0x53, 0x63, 0x73:
+		pair := (ed >> 4) & 0x03
+		nn := fetch16()
+		value := e.readPairByIndex(pair)
+		e.Bus.Write(nn, byte(value))
+		e.Bus.Write(nn+1, byte(value>>8))
+		result.Mnemonic = fmt.Sprintf("LD ($%04X),%s", nn, pairName(pair))
+		result.TStates = 20
+	case 0x4B, 0x5B, 0x6B, 0x7B:
+		pair := (ed >> 4) & 0x03
+		nn := fetch16()
+		lo := uint16(e.Bus.Read(nn))
+		hi := uint16(e.Bus.Read(nn + 1))
+		e.writePairByIndex(pair, lo|(hi<<8))
+		result.Mnemonic = fmt.Sprintf("LD %s,($%04X)", pairName(pair), nn)
+		result.TStates = 20
+	case 0x44, 0x4C, 0x54, 0x5C, 0x64, 0x6C, 0x74, 0x7C:
+		e.neg()
+		result.Mnemonic = "NEG"
+		result.TStates = 8
+	case 0x45:
+		e.IFF1 = e.IFF2
+		e.Reg.PC = e.pop16()
+		result.Mnemonic = "RETN"
+		result.TStates = 14
+	case 0x4D:
+		e.Reg.PC = e.pop16()
+		result.Mnemonic = "RETI"
+		result.TStates = 14
+	case 0x46, 0x4E, 0x66, 0x6E:
+		e.IM = 0
+		result.Mnemonic = "IM 0"
+		result.TStates = 8
+	case 0x56, 0x76:
+		e.IM = 1
+		result.Mnemonic = "IM 1"
+		result.TStates = 8
+	case 0x5E, 0x7E:
+		e.IM = 2
+		result.Mnemonic = "IM 2"
+		result.TStates = 8
+	case 0x47:
+		e.Reg.I = e.Reg.A
+		result.Mnemonic = "LD I,A"
+		result.TStates = 9
+	case 0x4F:
+		e.Reg.R = e.Reg.A
+		result.Mnemonic = "LD R,A"
+		result.TStates = 9
+	case 0x57:
+		e.Reg.A = e.Reg.I
+		e.Reg.SetFlag(FlagS, (e.Reg.A&0x80) != 0)
+		e.Reg.SetFlag(FlagZ, e.Reg.A == 0)
+		e.Reg.SetFlag(FlagH, false)
+		e.Reg.SetFlag(FlagPV, e.IFF2)
+		e.Reg.SetFlag(FlagN, false)
+		e.Reg.SetFlag(FlagX, (e.Reg.A&0x08) != 0)
+		e.Reg.SetFlag(FlagY, (e.Reg.A&0x20) != 0)
+		result.Mnemonic = "LD A,I"
+		result.TStates = 9
+	case 0x5F:
+		e.Reg.A = e.Reg.R
+		e.Reg.SetFlag(FlagS, (e.Reg.A&0x80) != 0)
+		e.Reg.SetFlag(FlagZ, e.Reg.A == 0)
+		e.Reg.SetFlag(FlagH, false)
+		e.Reg.SetFlag(FlagPV, e.IFF2)
+		e.Reg.SetFlag(FlagN, false)
+		e.Reg.SetFlag(FlagX, (e.Reg.A&0x08) != 0)
+		e.Reg.SetFlag(FlagY, (e.Reg.A&0x20) != 0)
+		result.Mnemonic = "LD A,R"
+		result.TStates = 9
+	default:
+		return fmt.Errorf("unsupported ED opcode $%02X at $%04X", ed, result.PCBefore)
+	}
+	return nil
+}
+
+func (e *Emulator) finishStep(result StepResult, bytes []byte) (StepResult, error) {
 	result.Bytes = append([]byte(nil), bytes...)
 	result.PCAfter = e.Reg.PC
 	e.commitStep(result)
@@ -267,6 +584,18 @@ func (e *Emulator) RunForTStates(budget int, maxSteps int) (RunResult, error) {
 	return result, nil
 }
 
+func (e *Emulator) RunUntilUnsupported(maxSteps int) (steps int, last StepResult, err error) {
+	for steps < maxSteps {
+		step, stepErr := e.Step()
+		if stepErr != nil {
+			return steps, step, stepErr
+		}
+		steps++
+		last = step
+	}
+	return steps, last, nil
+}
+
 func (e *Emulator) RunFrame(maxSteps int) (RunResult, error) {
 	return e.RunForTStates(TStatesPerFrame, maxSteps)
 }
@@ -292,6 +621,263 @@ func (e *Emulator) jrCondition(op byte) (bool, string) {
 	}
 }
 
+func (e *Emulator) condByIndex(index byte) (bool, string) {
+	switch index {
+	case 0:
+		return !e.Reg.Flag(FlagZ), "NZ"
+	case 1:
+		return e.Reg.Flag(FlagZ), "Z"
+	case 2:
+		return !e.Reg.Flag(FlagC), "NC"
+	case 3:
+		return e.Reg.Flag(FlagC), "C"
+	case 4:
+		return !e.Reg.Flag(FlagPV), "PO"
+	case 5:
+		return e.Reg.Flag(FlagPV), "PE"
+	case 6:
+		return !e.Reg.Flag(FlagS), "P"
+	case 7:
+		return e.Reg.Flag(FlagS), "M"
+	default:
+		return false, "?"
+	}
+}
+
+func (e *Emulator) readPairByIndex(index byte) uint16 {
+	switch index {
+	case 0:
+		return e.Reg.BC()
+	case 1:
+		return e.Reg.DE()
+	case 2:
+		return e.Reg.HL()
+	case 3:
+		return e.Reg.SP
+	default:
+		return 0
+	}
+}
+
+func (e *Emulator) writePairByIndex(index byte, value uint16) {
+	switch index {
+	case 0:
+		e.Reg.SetBC(value)
+	case 1:
+		e.Reg.SetDE(value)
+	case 2:
+		e.Reg.SetHL(value)
+	case 3:
+		e.Reg.SP = value
+	}
+}
+
+func (e *Emulator) readPair2ByIndex(index byte) uint16 {
+	switch index {
+	case 0:
+		return e.Reg.BC()
+	case 1:
+		return e.Reg.DE()
+	case 2:
+		return e.Reg.HL()
+	case 3:
+		return e.Reg.AF()
+	default:
+		return 0
+	}
+}
+
+func (e *Emulator) writePair2ByIndex(index byte, value uint16) {
+	switch index {
+	case 0:
+		e.Reg.SetBC(value)
+	case 1:
+		e.Reg.SetDE(value)
+	case 2:
+		e.Reg.SetHL(value)
+	case 3:
+		e.Reg.SetAF(value)
+	}
+}
+
+func pairName(index byte) string {
+	switch index {
+	case 0:
+		return "BC"
+	case 1:
+		return "DE"
+	case 2:
+		return "HL"
+	case 3:
+		return "SP"
+	default:
+		return "?"
+	}
+}
+
+func pair2Name(index byte) string {
+	switch index {
+	case 0:
+		return "BC"
+	case 1:
+		return "DE"
+	case 2:
+		return "HL"
+	case 3:
+		return "AF"
+	default:
+		return "?"
+	}
+}
+
+func (e *Emulator) addHL(value uint16) {
+	hl := e.Reg.HL()
+	sum := uint32(hl) + uint32(value)
+	res := uint16(sum)
+
+	f := e.Reg.F & (FlagS | FlagZ | FlagPV)
+	if ((hl & 0x0FFF) + (value & 0x0FFF)) > 0x0FFF {
+		f |= FlagH
+	}
+	if sum > 0xFFFF {
+		f |= FlagC
+	}
+	f |= byte((res >> 8) & 0x28)
+	e.Reg.F = f
+	e.Reg.SetHL(res)
+}
+
+func (e *Emulator) adcHL(value uint16) {
+	hl := e.Reg.HL()
+	carry := uint32(0)
+	if e.Reg.Flag(FlagC) {
+		carry = 1
+	}
+	sum := uint32(hl) + uint32(value) + carry
+	res := uint16(sum)
+
+	f := byte(0)
+	if (res & 0x8000) != 0 {
+		f |= FlagS
+	}
+	if res == 0 {
+		f |= FlagZ
+	}
+	if ((hl & 0x0FFF) + (value & 0x0FFF) + uint16(carry)) > 0x0FFF {
+		f |= FlagH
+	}
+	if ((^(hl ^ value)) & (hl ^ res) & 0x8000) != 0 {
+		f |= FlagPV
+	}
+	if sum > 0xFFFF {
+		f |= FlagC
+	}
+	f |= byte((res >> 8) & 0x28)
+	e.Reg.F = f
+	e.Reg.SetHL(res)
+}
+
+func (e *Emulator) sbcHL(value uint16) {
+	hl := e.Reg.HL()
+	carry := uint32(0)
+	if e.Reg.Flag(FlagC) {
+		carry = 1
+	}
+	diff := int32(hl) - int32(value) - int32(carry)
+	res := uint16(diff)
+
+	f := FlagN
+	if (res & 0x8000) != 0 {
+		f |= FlagS
+	}
+	if res == 0 {
+		f |= FlagZ
+	}
+	if int32(hl&0x0FFF)-int32(value&0x0FFF)-int32(carry) < 0 {
+		f |= FlagH
+	}
+	if (((hl ^ value) & (hl ^ res)) & 0x8000) != 0 {
+		f |= FlagPV
+	}
+	if diff < 0 {
+		f |= FlagC
+	}
+	f |= byte((res >> 8) & 0x28)
+	e.Reg.F = f
+	e.Reg.SetHL(res)
+}
+
+func (e *Emulator) addA(v byte, withCarry bool) {
+	a := e.Reg.A
+	carryIn := uint16(0)
+	if withCarry && e.Reg.Flag(FlagC) {
+		carryIn = 1
+	}
+	sum := uint16(a) + uint16(v) + carryIn
+	res := byte(sum)
+
+	f := byte(0)
+	if (res & 0x80) != 0 {
+		f |= FlagS
+	}
+	if res == 0 {
+		f |= FlagZ
+	}
+	if ((a & 0x0F) + (v & 0x0F) + byte(carryIn)) > 0x0F {
+		f |= FlagH
+	}
+	if ((^(a ^ v)) & (a ^ res) & 0x80) != 0 {
+		f |= FlagPV
+	}
+	if sum > 0xFF {
+		f |= FlagC
+	}
+	f |= res & (FlagX | FlagY)
+	e.Reg.A = res
+	e.Reg.F = f
+}
+
+func (e *Emulator) subA(v byte, withCarry bool) {
+	a := e.Reg.A
+	carryIn := uint16(0)
+	if withCarry && e.Reg.Flag(FlagC) {
+		carryIn = 1
+	}
+	diff := int(a) - int(v) - int(carryIn)
+	res := byte(diff)
+
+	f := FlagN
+	if (res & 0x80) != 0 {
+		f |= FlagS
+	}
+	if res == 0 {
+		f |= FlagZ
+	}
+	if int(a&0x0F)-int(v&0x0F)-int(carryIn) < 0 {
+		f |= FlagH
+	}
+	if ((a ^ v) & (a ^ res) & 0x80) != 0 {
+		f |= FlagPV
+	}
+	if diff < 0 {
+		f |= FlagC
+	}
+	f |= res & (FlagX | FlagY)
+	e.Reg.A = res
+	e.Reg.F = f
+}
+
+func (e *Emulator) andA(v byte) {
+	res := e.Reg.A & v
+	e.Reg.A = res
+	e.Reg.F = FlagH
+	e.Reg.SetFlag(FlagS, (res&0x80) != 0)
+	e.Reg.SetFlag(FlagZ, res == 0)
+	e.Reg.SetFlag(FlagPV, parityEven(res))
+	e.Reg.SetFlag(FlagX, (res&0x08) != 0)
+	e.Reg.SetFlag(FlagY, (res&0x20) != 0)
+}
+
 func (e *Emulator) xorA(v byte) {
 	res := e.Reg.A ^ v
 	e.Reg.A = res
@@ -301,6 +887,205 @@ func (e *Emulator) xorA(v byte) {
 	e.Reg.SetFlag(FlagPV, parityEven(res))
 	e.Reg.SetFlag(FlagX, (res&0x08) != 0)
 	e.Reg.SetFlag(FlagY, (res&0x20) != 0)
+}
+
+func (e *Emulator) orA(v byte) {
+	res := e.Reg.A | v
+	e.Reg.A = res
+	e.Reg.F = 0
+	e.Reg.SetFlag(FlagS, (res&0x80) != 0)
+	e.Reg.SetFlag(FlagZ, res == 0)
+	e.Reg.SetFlag(FlagPV, parityEven(res))
+	e.Reg.SetFlag(FlagX, (res&0x08) != 0)
+	e.Reg.SetFlag(FlagY, (res&0x20) != 0)
+}
+
+func (e *Emulator) cpA(v byte) {
+	a := e.Reg.A
+	diff := int(a) - int(v)
+	res := byte(diff)
+
+	f := FlagN
+	if (res & 0x80) != 0 {
+		f |= FlagS
+	}
+	if res == 0 {
+		f |= FlagZ
+	}
+	if int(a&0x0F)-int(v&0x0F) < 0 {
+		f |= FlagH
+	}
+	if ((a ^ v) & (a ^ res) & 0x80) != 0 {
+		f |= FlagPV
+	}
+	if diff < 0 {
+		f |= FlagC
+	}
+	f |= v & (FlagX | FlagY)
+	e.Reg.F = f
+}
+
+func (e *Emulator) inc8(v byte) byte {
+	res := v + 1
+	f := e.Reg.F & FlagC
+	if (res & 0x80) != 0 {
+		f |= FlagS
+	}
+	if res == 0 {
+		f |= FlagZ
+	}
+	if (v&0x0F)+1 > 0x0F {
+		f |= FlagH
+	}
+	if v == 0x7F {
+		f |= FlagPV
+	}
+	f |= res & (FlagX | FlagY)
+	e.Reg.F = f
+	return res
+}
+
+func (e *Emulator) dec8(v byte) byte {
+	res := v - 1
+	f := (e.Reg.F & FlagC) | FlagN
+	if (res & 0x80) != 0 {
+		f |= FlagS
+	}
+	if res == 0 {
+		f |= FlagZ
+	}
+	if (v & 0x0F) == 0 {
+		f |= FlagH
+	}
+	if v == 0x80 {
+		f |= FlagPV
+	}
+	f |= res & (FlagX | FlagY)
+	e.Reg.F = f
+	return res
+}
+
+func (e *Emulator) rlca() {
+	a := e.Reg.A
+	carry := (a >> 7) & 1
+	res := (a << 1) | carry
+	e.Reg.A = res
+	f := e.Reg.F & (FlagS | FlagZ | FlagPV)
+	if carry != 0 {
+		f |= FlagC
+	}
+	f |= res & (FlagX | FlagY)
+	e.Reg.F = f
+}
+
+func (e *Emulator) rrca() {
+	a := e.Reg.A
+	carry := a & 1
+	res := (a >> 1) | (carry << 7)
+	e.Reg.A = res
+	f := e.Reg.F & (FlagS | FlagZ | FlagPV)
+	if carry != 0 {
+		f |= FlagC
+	}
+	f |= res & (FlagX | FlagY)
+	e.Reg.F = f
+}
+
+func (e *Emulator) rla() {
+	a := e.Reg.A
+	carryIn := byte(0)
+	if e.Reg.Flag(FlagC) {
+		carryIn = 1
+	}
+	carryOut := (a >> 7) & 1
+	res := (a << 1) | carryIn
+	e.Reg.A = res
+	f := e.Reg.F & (FlagS | FlagZ | FlagPV)
+	if carryOut != 0 {
+		f |= FlagC
+	}
+	f |= res & (FlagX | FlagY)
+	e.Reg.F = f
+}
+
+func (e *Emulator) rra() {
+	a := e.Reg.A
+	carryIn := byte(0)
+	if e.Reg.Flag(FlagC) {
+		carryIn = 0x80
+	}
+	carryOut := a & 1
+	res := (a >> 1) | carryIn
+	e.Reg.A = res
+	f := e.Reg.F & (FlagS | FlagZ | FlagPV)
+	if carryOut != 0 {
+		f |= FlagC
+	}
+	f |= res & (FlagX | FlagY)
+	e.Reg.F = f
+}
+
+func (e *Emulator) cpl() {
+	e.Reg.A = ^e.Reg.A
+	f := e.Reg.F
+	f |= FlagH | FlagN
+	f = (f &^ (FlagX | FlagY)) | (e.Reg.A & (FlagX | FlagY))
+	e.Reg.F = f
+}
+
+func (e *Emulator) scf() {
+	f := e.Reg.F & (FlagS | FlagZ | FlagPV)
+	f |= e.Reg.A & (FlagX | FlagY)
+	f |= FlagC
+	e.Reg.F = f
+}
+
+func (e *Emulator) ccf() {
+	oldC := e.Reg.Flag(FlagC)
+	f := e.Reg.F & (FlagS | FlagZ | FlagPV)
+	if oldC {
+		f |= FlagH
+	}
+	if !oldC {
+		f |= FlagC
+	}
+	f |= e.Reg.A & (FlagX | FlagY)
+	e.Reg.F = f
+}
+
+func (e *Emulator) neg() {
+	a := e.Reg.A
+	e.Reg.A = 0
+	e.subA(a, false)
+}
+
+func (e *Emulator) exAF() {
+	e.Reg.A, e.Reg.APrime = e.Reg.APrime, e.Reg.A
+	e.Reg.F, e.Reg.FPrime = e.Reg.FPrime, e.Reg.F
+}
+
+func (e *Emulator) exx() {
+	e.Reg.B, e.Reg.BPrime = e.Reg.BPrime, e.Reg.B
+	e.Reg.C, e.Reg.CPrime = e.Reg.CPrime, e.Reg.C
+	e.Reg.D, e.Reg.DPrime = e.Reg.DPrime, e.Reg.D
+	e.Reg.E, e.Reg.EPrime = e.Reg.EPrime, e.Reg.E
+	e.Reg.H, e.Reg.HPrime = e.Reg.HPrime, e.Reg.H
+	e.Reg.L, e.Reg.LPrime = e.Reg.LPrime, e.Reg.L
+}
+
+func (e *Emulator) exDEHL() {
+	de := e.Reg.DE()
+	e.Reg.SetDE(e.Reg.HL())
+	e.Reg.SetHL(de)
+}
+
+func (e *Emulator) exSPHL() {
+	lo := e.Bus.Read(e.Reg.SP)
+	hi := e.Bus.Read(e.Reg.SP + 1)
+	hl := e.Reg.HL()
+	e.Bus.Write(e.Reg.SP, byte(hl))
+	e.Bus.Write(e.Reg.SP+1, byte(hl>>8))
+	e.Reg.SetHL(uint16(lo) | (uint16(hi) << 8))
 }
 
 func parityEven(v byte) bool {

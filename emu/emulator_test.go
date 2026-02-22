@@ -176,3 +176,24 @@ func TestEmulator_ROMBootPrefix(t *testing.T) {
 		t.Fatalf("PC mismatch after JP: got=%04X want=11CB", e.Reg.PC)
 	}
 }
+
+func TestEmulator_ROMProgress_NoUnsupportedForWindow(t *testing.T) {
+	rom, err := os.ReadFile(repoPath("assets", "roms", "48.rom"))
+	if err != nil {
+		t.Fatalf("read ROM: %v", err)
+	}
+
+	m, err := NewMachine48K(rom)
+	if err != nil {
+		t.Fatalf("new machine: %v", err)
+	}
+	e := New(m)
+
+	steps, last, runErr := e.RunUntilUnsupported(50000)
+	if runErr != nil {
+		t.Fatalf("unsupported opcode after %d steps at PC=%04X mnemonic=%q bytes=% X: %v", steps, last.PCBefore, last.Mnemonic, last.Bytes, runErr)
+	}
+	if steps != 50000 {
+		t.Fatalf("step budget mismatch: got=%d want=50000", steps)
+	}
+}
