@@ -189,11 +189,125 @@ func TestEmulator_ROMProgress_NoUnsupportedForWindow(t *testing.T) {
 	}
 	e := New(m)
 
-	steps, last, runErr := e.RunUntilUnsupported(50000)
+	steps, _, runErr := e.RunUntilUnsupported(50000)
 	if runErr != nil {
-		t.Fatalf("unsupported opcode after %d steps at PC=%04X mnemonic=%q bytes=% X: %v", steps, last.PCBefore, last.Mnemonic, last.Bytes, runErr)
+		t.Fatalf("execution failed after %d steps: %v", steps, runErr)
 	}
 	if steps != 50000 {
 		t.Fatalf("step budget mismatch: got=%d want=50000", steps)
+	}
+}
+
+func TestEmulator_RecognizesAllBaseOpcodes(t *testing.T) {
+	for op := 0; op <= 0xFF; op++ {
+		rom := blankROM()
+		rom[0] = byte(op)
+		rom[1] = 0x00
+		rom[2] = 0x00
+		rom[3] = 0x00
+
+		m, err := NewMachine48K(rom)
+		if err != nil {
+			t.Fatalf("new machine for op=%02X: %v", op, err)
+		}
+		e := New(m)
+		e.Reg.SP = 0xFFFF
+
+		if _, err := e.Step(); err != nil {
+			t.Fatalf("base opcode not recognized: %02X err=%v", op, err)
+		}
+	}
+}
+
+func TestEmulator_RecognizesAllCBOpcodes(t *testing.T) {
+	for op := 0; op <= 0xFF; op++ {
+		rom := blankROM()
+		rom[0] = 0xCB
+		rom[1] = byte(op)
+		rom[2] = 0x00
+
+		m, err := NewMachine48K(rom)
+		if err != nil {
+			t.Fatalf("new machine for CB %02X: %v", op, err)
+		}
+		e := New(m)
+		e.Reg.SP = 0xFFFF
+
+		if _, err := e.Step(); err != nil {
+			t.Fatalf("CB opcode not recognized: %02X err=%v", op, err)
+		}
+	}
+}
+
+func TestEmulator_RecognizesAllEDOpcodes(t *testing.T) {
+	for op := 0; op <= 0xFF; op++ {
+		rom := blankROM()
+		rom[0] = 0xED
+		rom[1] = byte(op)
+		rom[2] = 0x00
+		rom[3] = 0x00
+		rom[4] = 0x00
+
+		m, err := NewMachine48K(rom)
+		if err != nil {
+			t.Fatalf("new machine for ED %02X: %v", op, err)
+		}
+		e := New(m)
+		e.Reg.SP = 0xFFFF
+
+		if _, err := e.Step(); err != nil {
+			t.Fatalf("ED opcode not recognized: %02X err=%v", op, err)
+		}
+	}
+}
+
+func TestEmulator_RecognizesAllDDAndFDOpcodes(t *testing.T) {
+	prefixes := []byte{0xDD, 0xFD}
+	for _, p := range prefixes {
+		for op := 0; op <= 0xFF; op++ {
+			rom := blankROM()
+			rom[0] = p
+			rom[1] = byte(op)
+			rom[2] = 0x00
+			rom[3] = 0x00
+			rom[4] = 0x00
+			rom[5] = 0x00
+
+			m, err := NewMachine48K(rom)
+			if err != nil {
+				t.Fatalf("new machine for %02X %02X: %v", p, op, err)
+			}
+			e := New(m)
+			e.Reg.SP = 0xFFFF
+
+			if _, err := e.Step(); err != nil {
+				t.Fatalf("%02X opcode not recognized: %02X err=%v", p, op, err)
+			}
+		}
+	}
+}
+
+func TestEmulator_RecognizesAllDDCBAndFDCBOpcodes(t *testing.T) {
+	prefixes := []byte{0xDD, 0xFD}
+	for _, p := range prefixes {
+		for op := 0; op <= 0xFF; op++ {
+			rom := blankROM()
+			rom[0] = p
+			rom[1] = 0xCB
+			rom[2] = 0x00 // displacement
+			rom[3] = byte(op)
+			rom[4] = 0x00
+
+			m, err := NewMachine48K(rom)
+			if err != nil {
+				t.Fatalf("new machine for %02X CB %02X: %v", p, op, err)
+			}
+			e := New(m)
+			e.Reg.SP = 0xFFFF
+
+			if _, err := e.Step(); err != nil {
+				t.Fatalf("%02X CB opcode not recognized: %02X err=%v", p, op, err)
+			}
+		}
 	}
 }
