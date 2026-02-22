@@ -1,29 +1,72 @@
 # AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to coding agents working in this repository.
 
 ## Project Overview
 
-go-zx is a ZX Spectrum 48K emulator/disassembler learning project. The goal is to understand how the ZX Spectrum works by disassembling its ROM and eventually running it in an emulator.
+go-zx is a ZX Spectrum 48K emulator/disassembler learning project.
+Current focus: ROM disassembly quality and control-flow-aware validation.
 
-## Build Commands
+## Current Status
+
+- Table-driven Z80 disassembler is implemented using `assets/opcode-table.json`.
+- ROM disassembly output includes inline instruction comments derived from opcode descriptions.
+- Comments are aligned to a fixed output column for readability.
+- Unknown opcodes are reported as `DB $XX` with `Unknown opcode/data byte` comment.
+- Reachable/executed-path validation exists via static control-flow checks and tracer-based checks.
+
+## Build & Test Commands
 
 ```bash
-# Build and run
+# Run disassembly of 48K ROM
 go run .
 
 # Build binary
 go build -o go-zx .
+
+# Run all tests
+go test ./...
 ```
 
 ## Architecture
 
-- `main.go` - Entry point with ROM loader and disassembler
-- `assets/roms/48.rom` - ZX Spectrum 48K ROM binary (16KB)
+- `main.go`
+  - Loads opcode table and ROM
+  - Runs full disassembly and prints formatted lines
+
+- `assets/roms/48.rom`
+  - ZX Spectrum 48K ROM binary (16KB)
+
+- `assets/opcode-table.json`
+  - Opcode templates and descriptions used by the disassembler
+
+- `disasm/table.go`
+  - Opcode table models and loaders
+  - `OpcodeSpec` includes `description`
+
+- `disasm/disassembler.go`
+  - Opcode compilation and decode logic
+  - `Line` model includes `Comment` and `Unknown`
+  - `FormatLine` renders aligned `; comment`
+
+- `disasm/tracer.go`
+  - Abstract control-flow tracer (`TraceControlFlow`)
+  - Tracks visited PCs, opcode hits, unknowns on traced paths, and dynamic branch issues
+
+- `disasm/*_test.go`
+  - Decoder, formatting, ROM E2E, reachable-path validation, and tracer validation tests
+
+## Validation Expectations
+
+- Linear ROM unknown count is only a guardrail (data bytes may appear in linear sweep).
+- Stronger requirement: unknown opcodes should be zero on reachable/traced executable paths.
+- Dynamic/indirect branches (e.g. `JP (HL)`) are tracked as dynamic issues, not immediate hard failures.
 
 ## Commit Style
 
-Semantic commit messages are **mandatory**. Use the following format:
+Semantic commit messages are **mandatory**.
+
+Format:
 
 ```
 <type>(<scope>): <subject>
@@ -39,6 +82,7 @@ Types:
 - `chore` — build, tooling, or maintenance tasks
 
 Examples:
+
 ```
 feat(cpu): implement Z80 register set
 fix(disasm): correct CB-prefixed opcode decoding
